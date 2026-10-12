@@ -1,0 +1,98 @@
+{
+  "$schema": "https://github.com/Azure/data-api-builder/releases/download/v2.0.12/dab.draft.schema.json",
+  "data-source": {
+    "database-type": "mssql",
+    "connection-string": "@env('MSSQL_CONNECTION_STRING')",
+    "options": {
+      "set-session-context": false
+    }
+  },
+  "runtime": {
+    "rest": {
+      "enabled": true,
+      "path": "/api",
+      "request-body-strict": false
+    },
+    "graphql": {
+      "enabled": true,
+      "path": "/graphql",
+      "allow-introspection": true
+    },
+    "mcp": {
+      "enabled": true,
+      "path": "/mcp"
+    },
+    "host": {
+      "cors": {
+        "origins": [],
+        "allow-credentials": false
+      },
+      "authentication": {
+        "provider": "Unauthenticated"
+      },
+      "mode": "production"
+    }
+  },
+  "autoentities": {},
+  "entities": {
+    "Products": {
+      "description": "Product catalog with pricing, category, and inventory information",
+      "source": {
+        "object": "dbo.Products",
+        "type": "table"
+      },
+      "fields": [
+        {
+          "name": "ProductID",
+          "description": "Unique product identifier",
+          "primary-key": true
+        },
+        {
+          "name": "ProductName",
+          "description": "Name of the product",
+          "primary-key": false
+        },
+        {
+          "name": "Category",
+          "description": "Product category (Electronics, Furniture, Appliances, Office Supplies)",
+          "primary-key": false
+        },
+        {
+          "name": "UnitPrice",
+          "description": "Retail price per unit in USD",
+          "primary-key": false
+        },
+        {
+          "name": "UnitsInStock",
+          "description": "Current inventory count available for purchase",
+          "primary-key": false
+        },
+        {
+          "name": "Discontinued",
+          "description": "True if the product is no longer available for sale",
+          "primary-key": false
+        }
+      ],
+      "graphql": {
+        "enabled": true,
+        "type": {
+          "singular": "Products",
+          "plural": "Products"
+        }
+      },
+      "rest": {
+        "enabled": true
+      },
+      "permissions": [
+        {
+          "role": "anonymous",
+          "actions": [
+            {
+              "action": "read"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
