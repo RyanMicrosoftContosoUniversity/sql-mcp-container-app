@@ -1,0 +1,86 @@
+# Manual first checkpoint: no registry push, deployment, or SQL credentials.
+trigger: none
+pr: none
+
+pool:
+  name: mdp-sql-mcp-swc
+
+variables:
+  acrLoginServer: crmultillmcontosouniversity-crdsg5h5h5dkb9gm.azurecr.io
+
+jobs:
+- job: ValidateBuildEnvironment
+  displayName: Validate private networking and container build
+  timeoutInMinutes: 30
+  steps:
+  - checkout: self
+    fetchDepth: 1
+    persistCredentials: false
+
+  - bash: |
+      set -euo pipefail
+      for tool in docker az curl python3; do
+        command -v "$tool"
+      done
+      docker version
+      az version
+      df -h .
+    displayName: Check agent tools and Docker daemon
+
+  - bash: |
+      set -euo pipefail
+      python3 - <<'PY'
+      import ipaddress
+      import os
+      import socket
+
+      hostname = os.environ["ACR_LOGIN_SERVER"]
+      addresses = {
+          result[4][0]
+          for result in socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
+      }
+      expected_subnet = ipaddress.ip_network("10.8.2.0/24")
+      if not addresses or any(
+          ipaddress.ip_address(address) not in expected_subnet
+          for address in addresses
+      ):
+          raise SystemExit(
+              f"FAIL: {hostname} must resolve into {expected_subnet}; got {sorted(addresses)}"
+          )
+      print(f"PASS: ACR private DNS resolves to {sorted(addresses)}")
+      PY
+
+      status="$(curl --silent --show-error \
+        --connect-timeout 10 --max-time 30 \
+        --output /dev/null --write-out '%{http_code}' \
+        "https://${ACR_LOGIN_SERVER}/v2/")"
+      if [[ "$status" != "401" && "$status" != "200" ]]; then
+        printf 'FAIL: ACR endpoint returned HTTP %s\n' "$status" >&2
+        exit 1
+      fi
+      printf 'PASS: ACR HTTPS endpoint reachable (HTTP %s); authentication not tested\n' "$status"
+    displayName: Check private ACR DNS and HTTPS access
+    env:
+      ACR_LOGIN_SERVER: $(acrLoginServer)
+
+  - bash: |
+      set -euo pipefail
+      bash -n scripts/entrypoint.sh
+      bash -n scripts/smoke-test.sh
+      docker build --pull --progress=plain \
+        --tag "dab-products:ci-${BUILD_BUILDID}" .
+    displayName: Build image and validate script syntax
+    workingDirectory: $(Build.SourcesDirectory)
+
+  - bash: |
+      set -euo pipefail
+      image="dab-products:ci-${BUILD_BUILDID}"
+      docker run --rm --entrypoint /bin/bash "$image" -c '
+        set -euo pipefail
+        command -v curl
+        printf "%s\n" "{\"ok\":true}" | jq -e ".ok == true"
+        test -f /App/Azure.DataApiBuilder.Service.dll
+        bash -n /App/scripts/entrypoint.sh
+        bash -n /App/scripts/smoke-test.sh
+      '
+    displayName: Check built image tools and packaged scripts
