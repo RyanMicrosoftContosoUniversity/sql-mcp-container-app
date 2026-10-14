@@ -1,5 +1,7 @@
 FROM mcr.microsoft.com/azure-databases/data-api-builder:2.0.12
 
+ENV ASPNETCORE_URLS=http://+:5000
+
 # dd JSON parsing for startup smoke tests and remove package caches
 RUN tdnf install -y jq && tdnf clean all
 
