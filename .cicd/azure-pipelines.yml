@@ -17,70 +17,100 @@ jobs:
     fetchDepth: 1
     persistCredentials: false
 
-  - bash: |
-      set -euo pipefail
-      for tool in docker az curl python3; do
-        command -v "$tool"
-      done
-      docker version
-      az version
-      df -h .
+  - task: Bash@3
     displayName: Check agent tools and Docker daemon
+    inputs:
+      targetType: inline
+      script: |
+        set -euo pipefail
+        for tool in docker az curl python3; do
+          command -v "$tool"
+        done
+        docker version
+        az version
+        df -h .
 
-  - bash: |
-      set -euo pipefail
-      python3 - <<'PY'
-      import ipaddress
-      import os
-      import socket
-
-      hostname = os.environ["ACR_LOGIN_SERVER"]
-      addresses = {
-          result[4][0]
-          for result in socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
-      }
-      expected_subnet = ipaddress.ip_network("10.8.2.0/24")
-      if not addresses or any(
-          ipaddress.ip_address(address) not in expected_subnet
-          for address in addresses
-      ):
-          raise SystemExit(
-              f"FAIL: {hostname} must resolve into {expected_subnet}; got {sorted(addresses)}"
-          )
-      print(f"PASS: ACR private DNS resolves to {sorted(addresses)}")
-      PY
-
-      status="$(curl --silent --show-error \
-        --connect-timeout 10 --max-time 30 \
-        --output /dev/null --write-out '%{http_code}' \
-        "https://${ACR_LOGIN_SERVER}/v2/")"
-      if [[ "$status" != "401" && "$status" != "200" ]]; then
-        printf 'FAIL: ACR endpoint returned HTTP %s\n' "$status" >&2
-        exit 1
-      fi
-      printf 'PASS: ACR HTTPS endpoint reachable (HTTP %s); authentication not tested\n' "$status"
+  - task: Bash@3
     displayName: Check private ACR DNS and HTTPS access
+    inputs:
+      targetType: inline
+      script: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import ipaddress
+        import os
+        import socket
+
+        hostname = os.environ["ACR_LOGIN_SERVER"]
+        addresses = {
+            result[4][0]
+            for result in socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
+        }
+        expected_subnet = ipaddress.ip_network("10.8.2.0/24")
+        if not addresses or any(
+            ipaddress.ip_address(address) not in expected_subnet
+            for address in addresses
+        ):
+            raise SystemExit(
+                f"FAIL: {hostname} must resolve into {expected_subnet}; got {sorted(addresses)}"
+            )
+        print(f"PASS: ACR private DNS resolves to {sorted(addresses)}")
+        PY
+
+        status="$(curl --silent --show-error \
+          --connect-timeout 10 --max-time 30 \
+          --output /dev/null --write-out '%{http_code}' \
+          "https://${ACR_LOGIN_SERVER}/v2/")"
+        if [[ "$status" != "401" && "$status" != "200" ]]; then
+          printf 'FAIL: ACR endpoint returned HTTP %s\n' "$status" >&2
+          exit 1
+        fi
+        printf 'PASS: ACR HTTPS endpoint reachable (HTTP %s); authentication not tested\n' "$status"
     env:
       ACR_LOGIN_SERVER: $(acrLoginServer)
 
-  - bash: |
-      set -euo pipefail
-      bash -n scripts/entrypoint.sh
-      bash -n scripts/smoke-test.sh
-      docker build --pull --progress=plain \
-        --tag "dab-products:ci-${BUILD_BUILDID}" .
+  - task: Bash@3
     displayName: Build image and validate script syntax
-    workingDirectory: $(Build.SourcesDirectory)
-
-  - bash: |
-      set -euo pipefail
-      image="dab-products:ci-${BUILD_BUILDID}"
-      docker run --rm --entrypoint /bin/bash "$image" -c '
+    inputs:
+      targetType: inline
+      workingDirectory: $(Build.SourcesDirectory)
+      script: |
         set -euo pipefail
-        command -v curl
-        printf "%s\n" "{\"ok\":true}" | jq -e ".ok == true"
-        test -f /App/Azure.DataApiBuilder.Service.dll
-        bash -n /App/scripts/entrypoint.sh
-        bash -n /App/scripts/smoke-test.sh
-      '
+        bash -n scripts/entrypoint.sh
+        bash -n scripts/smoke-test.sh
+        docker build --pull --progress=plain \
+          --tag "dab-products:ci-${BUILD_BUILDID}" .
+
+  - task: Bash@3
     displayName: Check built image tools and packaged scripts
+    inputs:
+      targetType: inline
+      script: |
+        set -euo pipefail
+        image="dab-products:ci-${BUILD_BUILDID}"
+        docker run --rm --entrypoint /bin/bash "$image" -c '
+          set -euo pipefail
+          command -v curl
+          printf "%s\n" "{\"ok\":true}" | jq -e ".ok == true"
+          test -f /App/Azure.DataApiBuilder.Service.dll
+          bash -n /App/scripts/entrypoint.sh
+          bash -n /App/scripts/smoke-test.sh
+        '
+
+  - task: AzureCLI@2
+    displayName: Verify service connection and ACR login
+    inputs:
+      azureSubscription: private-apps-rg-sc
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+
+        subscription="$(az account show --query id --output tsv)"
+        if [[ "$subscription" != "910ebf13-1058-405d-b6cf-eda03e5288d1" ]]; then
+          printf 'FAIL: Unexpected subscription: %s\n' "$subscription" >&2
+          exit 1
+        fi
+
+        az acr login --name crmultillmcontosouniversity
+        printf 'PASS: Service connection authenticated to ACR\n'
