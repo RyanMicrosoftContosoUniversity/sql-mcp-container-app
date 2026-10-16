@@ -1,4 +1,4 @@
-# Manual first checkpoint: no registry push, deployment, or SQL credentials.
+# Manual build, registry push, and existing-app deployment; no SQL credentials.
 trigger: none
 pr: none
 
@@ -7,10 +7,12 @@ pool:
 
 variables:
   acrLoginServer: crmultillmcontosouniversity-crdsg5h5h5dkb9gm.azurecr.io
+  containerAppName: mcp-products
+  containerAppResourceGroup: private-apps-rg
 
 jobs:
 - job: ValidateBuildEnvironment
-  displayName: Validate private networking and container build
+  displayName: Build, publish, and deploy private SQL MCP
   timeoutInMinutes: 30
   steps:
   - checkout: self
@@ -98,7 +100,7 @@ jobs:
         '
 
   - task: AzureCLI@2
-    displayName: Verify service connection and ACR login
+    displayName: Authenticate and push image to ACR
     inputs:
       azureSubscription: private-apps-rg-sc
       scriptType: bash
@@ -114,3 +116,82 @@ jobs:
 
         az acr login --name crmultillmcontosouniversity
         printf 'PASS: Service connection authenticated to ACR\n'
+
+        image="dab-products:ci-${BUILD_BUILDID}"
+        published_image="${ACR_LOGIN_SERVER}/${image}"
+        docker tag "$image" "$published_image"
+        docker push "$published_image"
+        printf 'PASS: Published image %s\n' "$published_image"
+    env:
+      ACR_LOGIN_SERVER: $(acrLoginServer)
+
+  - task: AzureCLI@2
+    displayName: Deploy image to ACA and verify SQL startup smoke test
+    timeoutInMinutes: 15
+    inputs:
+      azureSubscription: private-apps-rg-sc
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+
+        image="${ACR_LOGIN_SERVER}/dab-products:ci-${BUILD_BUILDID}"
+        revision_suffix="ci-${BUILD_BUILDID}"
+        revision="${CONTAINER_APP_NAME}--${revision_suffix}"
+
+        az containerapp update \
+          --name "$CONTAINER_APP_NAME" \
+          --resource-group "$CONTAINER_APP_RESOURCE_GROUP" \
+          --container-name "$CONTAINER_APP_NAME" \
+          --image "$image" \
+          --revision-suffix "$revision_suffix" \
+          --output none
+
+        for attempt in {1..60}; do
+          health="$(az containerapp revision show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$CONTAINER_APP_RESOURCE_GROUP" \
+            --revision "$revision" \
+            --query properties.healthState --output tsv)"
+          printf 'Revision %s health: %s (attempt %s/60)\n' "$revision" "$health" "$attempt"
+
+          if [[ "$health" == "Healthy" ]]; then
+            deployed_image="$(az containerapp revision show \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$CONTAINER_APP_RESOURCE_GROUP" \
+              --revision "$revision" \
+              --query "properties.template.containers[?name=='${CONTAINER_APP_NAME}'].image | [0]" \
+              --output tsv)"
+            if [[ "$deployed_image" != "$image" ]]; then
+              printf 'FAIL: Revision image does not match %s\n' "$image" >&2
+              exit 1
+            fi
+
+            ready_revision="$(az containerapp show \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$CONTAINER_APP_RESOURCE_GROUP" \
+              --query properties.latestReadyRevisionName --output tsv)"
+            if [[ "$ready_revision" == "$revision" ]]; then
+              logs="$(az containerapp logs show \
+                --name "$CONTAINER_APP_NAME" \
+                --resource-group "$CONTAINER_APP_RESOURCE_GROUP" \
+                --revision "$revision" \
+                --container "$CONTAINER_APP_NAME" \
+                --type console --tail 100 --format text)"
+              if [[ "$logs" == *"[startup] PASS: Smoke tests completed; DAB remains running"* ]]; then
+                printf 'PASS: Deployed %s to healthy revision %s; SQL startup smoke test passed\n' "$image" "$revision"
+                exit 0
+              fi
+              printf 'Waiting for the new revision SQL startup smoke-test success marker\n'
+            fi
+          fi
+
+          sleep 10
+        done
+
+        printf 'FAIL: Revision %s did not become ready with a successful SQL startup smoke test within the polling window\n' "$revision" >&2
+        exit 1
+    env:
+      ACR_LOGIN_SERVER: $(acrLoginServer)
+      CONTAINER_APP_NAME: $(containerAppName)
+      CONTAINER_APP_RESOURCE_GROUP: $(containerAppResourceGroup)
