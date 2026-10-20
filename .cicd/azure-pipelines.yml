@@ -81,7 +81,7 @@ jobs:
         bash -n scripts/entrypoint.sh
         bash -n scripts/smoke-test.sh
         docker build --pull --progress=plain \
-          --tag "dab-products:ci-${BUILD_BUILDID}" .
+          --tag "dab-products:ci-${BUILD_BUILDID}-${SYSTEM_JOBATTEMPT}" .
 
   - task: Bash@3
     displayName: Check built image tools and packaged scripts
@@ -89,7 +89,7 @@ jobs:
       targetType: inline
       script: |
         set -euo pipefail
-        image="dab-products:ci-${BUILD_BUILDID}"
+        image="dab-products:ci-${BUILD_BUILDID}-${SYSTEM_JOBATTEMPT}"
         docker run --rm --entrypoint /bin/bash "$image" -c '
           set -euo pipefail
           command -v curl
@@ -117,7 +117,7 @@ jobs:
         az acr login --name crmultillmcontosouniversity
         printf 'PASS: Service connection authenticated to ACR\n'
 
-        image="dab-products:ci-${BUILD_BUILDID}"
+        image="dab-products:ci-${BUILD_BUILDID}-${SYSTEM_JOBATTEMPT}"
         published_image="${ACR_LOGIN_SERVER}/${image}"
         docker tag "$image" "$published_image"
         docker push "$published_image"
@@ -135,8 +135,8 @@ jobs:
       inlineScript: |
         set -euo pipefail
 
-        image="${ACR_LOGIN_SERVER}/dab-products:ci-${BUILD_BUILDID}"
-        revision_suffix="ci-${BUILD_BUILDID}"
+        image="${ACR_LOGIN_SERVER}/dab-products:ci-${BUILD_BUILDID}-${SYSTEM_JOBATTEMPT}"
+        revision_suffix="ci-${BUILD_BUILDID}-${SYSTEM_JOBATTEMPT}"
         revision="${CONTAINER_APP_NAME}--${revision_suffix}"
 
         az containerapp update \
